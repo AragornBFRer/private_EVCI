@@ -19,4 +19,11 @@
 - `--delta` class shift $h(1)-h(0)$
 - `--tpr`, `--tnr` proxy accuracy
 
+**Plots**
+- `python simulate.py --plot`
+- Outputs PNGs in `plots/`:
+   - `perf_vs_sample_size.png`
+   - `perf_vs_class_shift.png`
+   - `perf_vs_proxy_accuracy.png`
+
 The script prints L1 distances between recovered and true $f_0, f_1$ for both oracle and proxy settings.

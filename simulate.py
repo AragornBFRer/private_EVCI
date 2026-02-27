@@ -1,4 +1,7 @@
 import argparse
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -50,8 +53,8 @@ def clip_and_normalize(f, dx):
     return f
 
 
-def simulate(args):
-    rng = np.random.default_rng(args.seed)
+def run_once(args, rng=None):
+    rng = np.random.default_rng(args.seed) if rng is None else rng
 
     # Label generation
     z = rng.binomial(1, args.pi1, size=args.n)
@@ -147,15 +150,126 @@ def simulate(args):
     l1_proxy_f1 = np.sum(np.abs(f1_proxy - f1)) * dx
     l1_proxy_f0 = np.sum(np.abs(f0_proxy - f0)) * dx
 
+    return {
+        "l1_oracle_f1": l1_oracle_f1,
+        "l1_oracle_f0": l1_oracle_f0,
+        "l1_proxy_f1": l1_proxy_f1,
+        "l1_proxy_f0": l1_proxy_f0,
+    }
+
+
+def pretty_style():
+    plt.style.use("seaborn-v0_8-whitegrid")
+    plt.rcParams.update({
+        "font.size": 11,
+        "axes.titlesize": 12,
+        "axes.labelsize": 11,
+        "legend.fontsize": 10,
+        "figure.dpi": 150,
+        "savefig.dpi": 300,
+    })
+
+
+def summarize(metrics_list):
+    keys = metrics_list[0].keys()
+    out = {}
+    for k in keys:
+        out[k] = float(np.mean([m[k] for m in metrics_list]))
+    out["l1_oracle_mean"] = 0.5 * (out["l1_oracle_f1"] + out["l1_oracle_f0"])
+    out["l1_proxy_mean"] = 0.5 * (out["l1_proxy_f1"] + out["l1_proxy_f0"])
+    return out
+
+
+def plot_series(x, y_oracle, y_proxy, xlabel, title, out_path):
+    fig, ax = plt.subplots(figsize=(4.6, 3.3))
+    ax.plot(x, y_oracle, marker="o", label="Oracle inversion")
+    ax.plot(x, y_proxy, marker="o", label="Proxy recovery")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Mean L1 error")
+    ax.set_title(title)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_sweeps(args):
+    pretty_style()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rng = np.random.default_rng(args.seed)
+
+    # Sweep 1: sample size
+    n_values = [int(v) for v in args.n_sweep.split(",")]
+    oracle_vals = []
+    proxy_vals = []
+    for n in n_values:
+        args.n = n
+        metrics = [run_once(args, rng=rng) for _ in range(args.reps)]
+        summary = summarize(metrics)
+        oracle_vals.append(summary["l1_oracle_mean"])
+        proxy_vals.append(summary["l1_proxy_mean"])
+    plot_series(
+        n_values,
+        oracle_vals,
+        proxy_vals,
+        xlabel="Sample size",
+        title="Recovery error vs sample size",
+        out_path=out_dir / "perf_vs_sample_size.png",
+    )
+
+    # Sweep 2: class shift delta
+    delta_values = [float(v) for v in args.delta_sweep.split(",")]
+    oracle_vals = []
+    proxy_vals = []
+    for delta in delta_values:
+        args.delta = delta
+        metrics = [run_once(args, rng=rng) for _ in range(args.reps)]
+        summary = summarize(metrics)
+        oracle_vals.append(summary["l1_oracle_mean"])
+        proxy_vals.append(summary["l1_proxy_mean"])
+    plot_series(
+        delta_values,
+        oracle_vals,
+        proxy_vals,
+        xlabel="Class shift $h(1)-h(0)$",
+        title="Recovery error vs class shift",
+        out_path=out_dir / "perf_vs_class_shift.png",
+    )
+
+    # Sweep 3: proxy accuracy (tpr=tnr)
+    acc_values = [float(v) for v in args.acc_sweep.split(",")]
+    oracle_vals = []
+    proxy_vals = []
+    for acc in acc_values:
+        args.tpr = acc
+        args.tnr = acc
+        metrics = [run_once(args, rng=rng) for _ in range(args.reps)]
+        summary = summarize(metrics)
+        oracle_vals.append(summary["l1_oracle_mean"])
+        proxy_vals.append(summary["l1_proxy_mean"])
+    plot_series(
+        acc_values,
+        oracle_vals,
+        proxy_vals,
+        xlabel="Proxy accuracy (TPR = TNR)",
+        title="Recovery error vs proxy accuracy",
+        out_path=out_dir / "perf_vs_proxy_accuracy.png",
+    )
+
+
+def simulate(args):
+    metrics = run_once(args)
     print("=== Simulation Summary ===")
-    print(f"n={args.n}, k={args.k}, delta={delta}")
-    print(f"pi1={pi1:.3f}, tpr={tpr:.3f}, tnr={tnr:.3f}")
+    print(f"n={args.n}, k={args.k}, delta={args.delta}")
+    print(f"pi1={args.pi1:.3f}, tpr={args.tpr:.3f}, tnr={args.tnr:.3f}")
     print("--- L1 distance (oracle inversion) ---")
-    print(f"f1: {l1_oracle_f1:.4f}")
-    print(f"f0: {l1_oracle_f0:.4f}")
+    print(f"f1: {metrics['l1_oracle_f1']:.4f}")
+    print(f"f0: {metrics['l1_oracle_f0']:.4f}")
     print("--- L1 distance (proxy recovery) ---")
-    print(f"f1: {l1_proxy_f1:.4f}")
-    print(f"f0: {l1_proxy_f0:.4f}")
+    print(f"f1: {metrics['l1_proxy_f1']:.4f}")
+    print(f"f0: {metrics['l1_proxy_f0']:.4f}")
 
 
 def build_parser():
@@ -176,8 +290,19 @@ def build_parser():
     parser.add_argument("--mu1", type=float, default=0.5)
     parser.add_argument("--sigma0", type=float, default=1.0)
     parser.add_argument("--sigma1", type=float, default=1.2)
+
+    parser.add_argument("--plot", action="store_true", help="Generate sweep plots")
+    parser.add_argument("--out-dir", type=str, default="plots")
+    parser.add_argument("--reps", type=int, default=3)
+    parser.add_argument("--n-sweep", type=str, default="5000,10000,30000,100000,200000")
+    parser.add_argument("--delta-sweep", type=str, default="0.5,1.0,1.5,2.0,2.5,3.0")
+    parser.add_argument("--acc-sweep", type=str, default="0.55,0.65,0.75,0.85,0.95")
     return parser
 
 
 if __name__ == "__main__":
-    simulate(build_parser().parse_args())
+    args = build_parser().parse_args()
+    if args.plot:
+        run_sweeps(args)
+    else:
+        simulate(args)
